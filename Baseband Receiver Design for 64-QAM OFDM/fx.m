@@ -1,11 +1,4 @@
 %% ANC Headset DSP Core (Fx-LMS with Variable Step-Size)
-% MATLAB R2023a-compatible, single-file script.
-% Goal: 20 dB attenuation (100–1000 Hz) within 300 ms, <2% speech distortion (cepstral distance proxy).
-% Notes:
-% - Self-contained simulation (no audio files). Replace synthetic signals with real recordings as needed.
-% - Uses feedforward ANC with one reference mic (x), one error mic at ear (e), and one loudspeaker.
-% - Variable step-size NLMS based on normalized misalignment proxy and speech-protection (VAD-based).
-% - Includes offline secondary-path identification (in sim we know S; in practice, replace with measured S_hat).
 
 clear; close all; clc;
 
@@ -39,7 +32,6 @@ adapt_eval_start = 0.30;      % Evaluate attenuation after 300 ms
 
 rng(2);
 
-% ---------- 2) Synthetic signals ----------
 % Reference noise (ambient before reaching ear)
 % Road-traffic-like noise: low-passed, slightly 1/f-colored
 w = randn(N,1);
@@ -59,7 +51,6 @@ s_clean = 0.2*sin(2*pi*cumsum(f0)/fs);
 s_clean = 0.6*filter(bF1,aF1,s_clean) + 0.4*filter(bF2,aF2,s_clean);
 s_clean = 0.10*s_clean / max(abs(s_clean));       % Keep speech modest vs noise
 
-% ---------- 3) Acoustic paths ----------
 % Build primary path P(z) and secondary path S(z)
 % Primary path: mildly resonant FIR (ear-cup leakage & reflections)
 P = fir1(Lp-1, 0.35, kaiser(Lp,6));
@@ -75,24 +66,6 @@ S = S(1:Ls); S = S / norm(S) * 0.6;               % Normalize and scale
 S_hat = S + 0.05*randn(size(S));                  % 5% model error
 S_hat = S_hat / max(abs(S_hat));
 
-% ---------- 4) Off-line secondary-path ID (optional demo) ----------
-% In practice, you would identify S_hat by injecting a probe signal to the loudspeaker
-% and measuring ear-mic response. Here we already set S_hat. You can uncomment to
-% emulate an LMS identification step that produces S_hat.
-%
-% {  % Pseudo-code (commented):
-% M_id = 1024; L_id = Ls; mu_id = 0.2; sid = zeros(L_id,1);
-% u = randn(M_id,1); y = filter(S,1,u);  % loudspeaker drive and ear-mic
-% Ubuf = zeros(L_id,1);
-% for n=1:M_id
-%   Ubuf = [u(n); Ubuf(1:end-1)];
-%   e_id = y(n) - sid.'*Ubuf;
-%   sid = sid + (mu_id/(1e-6+Ubuf.'*Ubuf))*e_id*Ubuf;
-% end
-% S_hat = sid;
-% }
-
-% ---------- 5) Fx-LMS ANC loop ----------
 W = zeros(Lw,1);                % Adaptive filter coeffs (loudspeaker drive filter)
 Xbuf = zeros(Lw,1);
 Xfbuf = zeros(Lw,1);            % Filtered-x buffer
@@ -178,7 +151,6 @@ for n = 1:N
     xpf_hist(n) = Px;
 end
 
-% ---------- 6) Metrics ----------
 % Compute attenuation in band 100–1000 Hz after adaptation settles (>=300 ms)
 idx_eval = round(adapt_eval_start*fs):N;
 [ePxx,fgrid] = pwelch(noanc(idx_eval), hamming(2^12), [], [], fs);
@@ -205,12 +177,6 @@ if isempty(idx20)
 else
     t20 = times(idx20);
 end
-
-% Cepstral distance-based speech distortion (proxy %)
-% Compare cepstra of clean speech and the speech component at ear after ANC.
-% We approximate "speech component at ear" by applying a spectral mask that
-% deemphasizes sub-100 Hz and strong narrowband noise. This is a proxy – in
-% lab use parallel path recording of speech alone.
 
 % Frame-based MFCC-like cepstra (but we implement a simple real cepstrum)
 frame_len = round(0.032*fs);        % 32 ms
@@ -256,21 +222,7 @@ else
 end
 fprintf('Cepstral-distance speech distortion (proxy): %.2f %% (target < 2%%)\n', cd_pct);
 
-% ---------- 8) Tuning guidance ----------
-% If attenuation < 20 dB or t20 > 300 ms:
-% - Increase Lw (128 -> 192 or 256) and/or slightly raise mu_max (<=0.8) if stable.
-% - Improve S_hat accuracy (lower modeling error, correct delay). A poor S_hat slows convergence.
-% - Increase sec_delay to reflect true acoustic delay; mismatch hurts Fx-LMS.
-% - Reduce alpha_pwr (faster power tracking) for quicker step-size response.
-% If speech distortion > 2%%:
-% - Lower vad_thr (more aggressive speech protection) or lower mu_max.
-% - Increase alpha_vad (slower attack, more stable) to avoid adapting on speech.
-% - Add a "freeze": if vad_env > vad_thr, set mu = mu_min.
-% Stability tips:
-% - Keep mu_max < 1 for NLMS; higher with precise S_hat but risk oscillation.
-% - Leakage helps bound weights in non-stationary conditions.
 
-% ---------- Helper: Real cepstra function ----------
 function C = real_cepstra(x, frame_len, hop)
     % Returns low-quefrency real cepstral coefficients per frame (rows: quefrency, cols: frames)
     x = x(:);
